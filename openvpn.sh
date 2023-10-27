@@ -1,7 +1,5 @@
 #!/usr/bin/env bash
 
-set -x
-
 set -euo pipefail  # Makes the script exit on any command failure and treats unset variables as an error
 set -o nounset                              # Treat unset variables as an error
 
@@ -67,27 +65,29 @@ firewall() {
     [[ -z "${1:-}" && -r $conf ]] &&
         port=$(awk -F"[\r\t ]+" '/^remote/ && $3~/^[0-9]+$/ {print $3}' "$conf" | uniq | grep -E '^[0-9]+$' || echo 1194)
 
-    # Setup IPv6 iptables
-    ip6tables -F 2>/dev/null
-    ip6tables -X 2>/dev/null
-    ip6tables -P INPUT DROP 2>/dev/null
-    ip6tables -P FORWARD DROP 2>/dev/null
-    ip6tables -P OUTPUT DROP 2>/dev/null
+    if [ -x "$(command -v ip6tables)" ] && [ -d "/proc/sys/net/ipv6" ]; then
+        # Setup IPv6 iptables
+        ip6tables -F 2>/dev/null
+        ip6tables -X 2>/dev/null
+        ip6tables -P INPUT DROP 2>/dev/null
+        ip6tables -P FORWARD DROP 2>/dev/null
+        ip6tables -P OUTPUT DROP 2>/dev/null
 
-    # Common rules for IPv6
-    ip6tables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null
-    ip6tables -A INPUT -p icmpv6 -j ACCEPT 2>/dev/null  # Updated for IPv6 ICMP
-    ip6tables -A INPUT -i lo -j ACCEPT 2>/dev/null
+        # Common rules for IPv6
+        ip6tables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null
+        ip6tables -A INPUT -p icmpv6 -j ACCEPT 2>/dev/null  # Updated for IPv6 ICMP
+        ip6tables -A INPUT -i lo -j ACCEPT 2>/dev/null
 
-    # Rules for each IPv6 address
-    for docker6_network in "${docker6_networks[@]}"; do
-        if [[ -n $docker6_network ]]; then
-            ip6tables -A INPUT -s "$docker6_network" -j ACCEPT 2>/dev/null
-            ip6tables -A FORWARD -d "$docker6_network" -j ACCEPT 2>/dev/null
-            ip6tables -A FORWARD -s "$docker6_network" -j ACCEPT 2>/dev/null
-            ip6tables -A OUTPUT -d "$docker6_network" -j ACCEPT 2>/dev/null
-        fi
-    done
+        # Rules for each IPv6 address
+        for docker6_network in "${docker6_networks[@]}"; do
+            if [[ -n $docker6_network ]]; then
+                ip6tables -A INPUT -s "$docker6_network" -j ACCEPT 2>/dev/null
+                ip6tables -A FORWARD -d "$docker6_network" -j ACCEPT 2>/dev/null
+                ip6tables -A FORWARD -s "$docker6_network" -j ACCEPT 2>/dev/null
+                ip6tables -A OUTPUT -d "$docker6_network" -j ACCEPT 2>/dev/null
+            fi
+        done
+    fi
 
     # Additional common rules for FORWARD and OUTPUT for IPv6, if any, should be added here...
 
@@ -157,20 +157,22 @@ global_return_routes() {
     local iface=$(ip route | awk '/^default/ {print $5; exit}')
 
     # Extract default gateways and local IPs using the 'ip' command.
-    local gw6=$(ip -6 route show dev "$iface" | awk '/default/ {print $3}')
     local gw=$(ip -4 route show dev "$iface" | awk '/default/ {print $3}')
-    local ip6=$(ip -6 addr show dev "$iface" | awk -F '[ \t/]+' '/inet6.*global/ {print $3}')
     local ip=$(ip -4 addr show dev "$iface" | awk -F '[ \t/]+' '/inet .*global/ {print $3}')
 
-    # Process IPv6 addresses and default gateways.
-    for addr in $ip6; do
-        ip -6 rule show table 10 | grep -q "$addr\\>" || ip -6 rule add from $addr lookup 10
-        ip6tables -S 2>/dev/null | grep -q "$addr\\>" || ip6tables -A INPUT -d $addr -j ACCEPT 2>/dev/null
-    done
+    if [ -d "/proc/sys/net/ipv6" ]; then
+        # Process IPv6 addresses and default gateways.
+        local ip6=$(ip -6 addr show dev "$iface" | awk -F '[ \t/]+' '/inet6.*global/ {print $3}')
+        local gw6=$(ip -6 route show dev "$iface" | awk '/default/ {print $3}')
+        for addr in $ip6; do
+            ip -6 rule show table 10 | grep -q "$addr\\>" || ip -6 rule add from $addr lookup 10
+            ip6tables -S 2>/dev/null | grep -q "$addr\\>" || ip6tables -A INPUT -d $addr -j ACCEPT 2>/dev/null
+        done
 
-    for gateway in $gw6; do
-        ip -6 route show table 10 | grep -q "$gateway\\>" || ip -6 route add default via $gateway table 10
-    done
+        for gateway in $gw6; do
+            ip -6 route show table 10 | grep -q "$gateway\\>" || ip -6 route add default via $gateway table 10
+        done
+    fi
 
     # Process IPv4 addresses and default gateways.
     for addr in $ip; do
