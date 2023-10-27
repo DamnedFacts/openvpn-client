@@ -65,29 +65,28 @@ firewall() {
     [[ -z "${1:-}" && -r $conf ]] &&
         port=$(awk -F"[\r\t ]+" '/^remote/ && $3~/^[0-9]+$/ {print $3}' "$conf" | uniq | grep -E '^[0-9]+$' || echo 1194)
 
-    if [ -x "$(command -v ip6tables)" ] && [ -d "/proc/sys/net/ipv6" ]; then
-        # Setup IPv6 iptables
-        ip6tables -F 2>/dev/null
-        ip6tables -X 2>/dev/null
-        ip6tables -P INPUT DROP 2>/dev/null
-        ip6tables -P FORWARD DROP 2>/dev/null
-        ip6tables -P OUTPUT DROP 2>/dev/null
+    # Setup IPv6 iptables
+    ip6tables -F 2>/dev/null
+    ip6tables -X 2>/dev/null
 
-        # Common rules for IPv6
-        ip6tables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null
-        ip6tables -A INPUT -p icmpv6 -j ACCEPT 2>/dev/null  # Updated for IPv6 ICMP
-        ip6tables -A INPUT -i lo -j ACCEPT 2>/dev/null
+    # Common rules for IPv6
+    ip6tables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null
+    ip6tables -A INPUT -p icmpv6 -j ACCEPT 2>/dev/null  # Updated for IPv6 ICMP
+    ip6tables -A INPUT -i lo -j ACCEPT 2>/dev/null
 
-        # Rules for each IPv6 address
-        for docker6_network in "${docker6_networks[@]}"; do
-            if [[ -n $docker6_network ]]; then
-                ip6tables -A INPUT -s "$docker6_network" -j ACCEPT 2>/dev/null
-                ip6tables -A FORWARD -d "$docker6_network" -j ACCEPT 2>/dev/null
-                ip6tables -A FORWARD -s "$docker6_network" -j ACCEPT 2>/dev/null
-                ip6tables -A OUTPUT -d "$docker6_network" -j ACCEPT 2>/dev/null
-            fi
-        done
-    fi
+    # Rules for each IPv6 address
+    for docker6_network in "${docker6_networks[@]}"; do
+        if [[ -n $docker6_network ]]; then
+            ip6tables -A INPUT -s "$docker6_network" -j ACCEPT 2>/dev/null
+            ip6tables -A FORWARD -d "$docker6_network" -j ACCEPT 2>/dev/null
+            ip6tables -A FORWARD -s "$docker6_network" -j ACCEPT 2>/dev/null
+            ip6tables -A OUTPUT -d "$docker6_network" -j ACCEPT 2>/dev/null
+        fi
+    done
+    ip6tables -P INPUT DROP 2>/dev/null
+    ip6tables -P FORWARD DROP 2>/dev/null
+    ip6tables -P OUTPUT DROP 2>/dev/null
+
 
     # Additional common rules for FORWARD and OUTPUT for IPv6, if any, should be added here...
 
@@ -114,10 +113,9 @@ firewall() {
         iptables -A OUTPUT -d "$server" -j ACCEPT
     done
 
-    # Allow traffic to DNS servers
-    for server in "${dns_servers[@]}"; do
-        iptables -A OUTPUT -d "$server" -j ACCEPT
-    done
+    # Allow outgoing DNS
+    iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
+    iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
 
     iptables -P INPUT DROP
     iptables -P FORWARD DROP
@@ -131,20 +129,18 @@ firewall() {
     fi
 
     # Ensure routing files exist and process their contents
-    for i in $route6 $route; do
-        if [[ ! -e $i ]]; then
-            touch $i
-        fi
+    if [[ ! -e $i ]]; then
+        touch $i
+    fi
 
-        if [[ -s $i ]]; then
-            while IFS= read -r net; do
-                # Define your return_route6 and return_route functions somewhere in your script.
-                # They should handle adding the necessary routes.
-                [[ $i == "$route6" ]] && return_route6 "$net"
-                [[ $i == "$route" ]] && return_route "$net"
-            done < "$i"
-        fi
-    done
+    if [[ -s $i ]]; then
+        while IFS= read -r net; do
+            # Define your return_route6 and return_route functions somewhere in your script.
+            # They should handle adding the necessary routes.
+            [[ $i == "$route6" ]] && return_route6 "$net"
+            [[ $i == "$route" ]] && return_route "$net"
+        done < "$i"
+    fi
 }
 
 
@@ -160,19 +156,17 @@ global_return_routes() {
     local gw=$(ip -4 route show dev "$iface" | awk '/default/ {print $3}')
     local ip=$(ip -4 addr show dev "$iface" | awk -F '[ \t/]+' '/inet .*global/ {print $3}')
 
-    if [ -d "/proc/sys/net/ipv6" ]; then
-        # Process IPv6 addresses and default gateways.
-        local ip6=$(ip -6 addr show dev "$iface" | awk -F '[ \t/]+' '/inet6.*global/ {print $3}')
-        local gw6=$(ip -6 route show dev "$iface" | awk '/default/ {print $3}')
-        for addr in $ip6; do
-            ip -6 rule show table 10 | grep -q "$addr\\>" || ip -6 rule add from $addr lookup 10
-            ip6tables -S 2>/dev/null | grep -q "$addr\\>" || ip6tables -A INPUT -d $addr -j ACCEPT 2>/dev/null
-        done
+    # Process IPv6 addresses and default gateways.
+    local ip6=$(ip -6 addr show dev "$iface" | awk -F '[ \t/]+' '/inet6.*global/ {print $3}')
+    local gw6=$(ip -6 route show dev "$iface" | awk '/default/ {print $3}')
+    for addr in $ip6; do
+        ip -6 rule show table 10 | grep -q "$addr\\>" || ip -6 rule add from $addr lookup 10
+        ip6tables -S 2>/dev/null | grep -q "$addr\\>" || ip6tables -A INPUT -d $addr -j ACCEPT 2>/dev/null
+    done
 
-        for gateway in $gw6; do
-            ip -6 route show table 10 | grep -q "$gateway\\>" || ip -6 route add default via $gateway table 10
-        done
-    fi
+    for gateway in $gw6; do
+        ip -6 route show table 10 | grep -q "$gateway\\>" || ip -6 route add default via $gateway table 10
+    done
 
     # Process IPv4 addresses and default gateways.
     for addr in $ip; do
@@ -422,17 +416,6 @@ EOF
 
 # Parse the OpenVPN config file to extract the 'remote' server addresses
 mapfile -t vpn_servers < <(grep -oP '^remote\s+\K[^\s]+' "$conf")
-
-# Parse the OpenVPN config file or the system's resolv.conf to find the DNS server
-# This is an example and might need to be adjusted based on your specific setup
-mapfile -t dns_servers < <(grep -oP 'dhcp-option\s+DNS\s+\K[^\s]+' "$conf" || grep -oP '^nameserver\s+\K[^\s]+' /etc/resolv.conf)
-
-# Check if we didn't find any DNS servers in the OpenVPN configuration
-if [ ${#dns_servers[@]} -eq 0 ]; then
-    # No DNS servers were found in the OpenVPN config, let's use the system's DNS settings
-    mapfile -t dns_servers < <(grep -oP '^nameserver\s+\K[^\s]+' /etc/resolv.conf)
-fi
-
 
 while getopts ":hc:Ddf:a:m:o:p:R:r:v:" opt; do
     case "$opt" in
