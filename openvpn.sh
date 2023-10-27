@@ -71,10 +71,16 @@ firewall() {
 
     # Common rules for IPv6
     ip6tables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null
+    ip6tables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null
+    ip6tables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null
+
     ip6tables -A OUTPUT -p icmpv6 -j ACCEPT 2>/dev/null  # Updated for IPv6 ICMP
 
     ip6tables -A INPUT -i lo -j ACCEPT 2>/dev/null
     ip6tables -A OUTPUT -o lo -j ACCEPT 2>/dev/null
+
+    ip6tables -A OUTPUT -o tap+ -j ACCEPT 2>/dev/null
+    ip6tables -A OUTPUT -o tun+ -j ACCEPT 2>/dev/null
 
     # Rules for each IPv6 address
     for docker6_network in "${docker6_networks[@]}"; do
@@ -85,6 +91,18 @@ firewall() {
             ip6tables -A OUTPUT -d "$docker6_network" -j ACCEPT 2>/dev/null
         fi
     done
+
+    ip6tables -A OUTPUT -p tcp -m owner --gid-owner vpn -j ACCEPT 2>/dev/null &&
+    ip6tables -A OUTPUT -p udp -m owner --gid-owner vpn -j ACCEPT 2>/dev/null||{
+        for i in $port; do
+            ip6tables -A OUTPUT -p tcp -m tcp --dport $i -j ACCEPT 2>/dev/null
+            ip6tables -A OUTPUT -p udp -m udp --dport $i -j ACCEPT 2>/dev/null
+        done
+        ip6tables -A OUTPUT -p udp -m udp --dport 53 -j ACCEPT 2>/dev/null; }
+
+    ip6tables -t nat -A POSTROUTING -o tap+ -j MASQUERADE
+    ip6tables -t nat -A POSTROUTING -o tun+ -j MASQUERADE
+
     ip6tables -P INPUT DROP 2>/dev/null
     ip6tables -P FORWARD DROP 2>/dev/null
     ip6tables -P OUTPUT DROP 2>/dev/null
@@ -98,11 +116,17 @@ firewall() {
 
     # Common rules for IPv4
     iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
     iptables -A OUTPUT -p icmp --icmp-type echo-request -j ACCEPT
     iptables -A INPUT -p icmp --icmp-type echo-reply -j ACCEPT
 
     iptables -A INPUT -i lo -j ACCEPT
     iptables -A OUTPUT -o lo -j ACCEPT
+
+    iptables -A OUTPUT -o tap+ -j ACCEPT
+    iptables -A OUTPUT -o tun+ -j ACCEPT
 
     # Rules for each IPv4 address
     for docker_network in "${docker_networks[@]}"; do
@@ -114,20 +138,34 @@ firewall() {
         fi
     done
 
-    # Allow traffic to VPN servers
-    for server in "${vpn_servers[@]}"; do
-        iptables -A OUTPUT -d "$server" -j ACCEPT
+    iptables -A OUTPUT -p tcp -m owner --gid-owner vpn -j ACCEPT 2>/dev/null &&
+    iptables -A OUTPUT -p udp -m owner --gid-owner vpn -j ACCEPT || {
+        for i in $port; do
+            iptables -A OUTPUT -p tcp -m tcp --dport $i -j ACCEPT
+            iptables -A OUTPUT -p udp -m udp --dport $i -j ACCEPT
+        done
+        iptables -A OUTPUT -p udp -m udp --dport 53 -j ACCEPT; }
+
+    for server in "${dns_servers[@]}"; do
+        iptables -A OUTPUT -d "$server" -m owner --gid-owner vpn -j ACCEPT \
+        2>/dev/null && {
+            iptables -A OUTPUT -p udp -m udp --dport 53 -j ACCEPT
+            ext_args+=" --route-up '/bin/sh -c \""
+            ext_args+=" iptables -A OUTPUT -d $server -j ACCEPT\"'"
+            ext_args+=" --route-pre-down '/bin/sh -c \""
+            ext_args+=" iptables -D OUTPUT -d $server -j ACCEPT\"'"
+        } || iptables -A OUTPUT -d "$server" -j ACCEPT
     done
 
-    # Allow outgoing DNS
-    iptables -A OUTPUT -p udp --dport 53 -j ACCEPT
-    iptables -A OUTPUT -p tcp --dport 53 -j ACCEPT
+    iptables -t nat -A POSTROUTING -o tap+ -j MASQUERADE
+    iptables -t nat -A POSTROUTING -o tun+ -j MASQUERADE
 
     iptables -P INPUT DROP
     iptables -P FORWARD DROP
     iptables -P OUTPUT DROP
-    # Additional common rules for OUTPUT and NAT tables for IPv4, if any, should be added here...
 
+
+    # Additional common rules for OUTPUT and NAT tables for IPv4, if any, should be added here...
 
     # Check if custom firewall rules file exists and source it
     if [[ -r $firewall_cust ]]; then
@@ -424,6 +462,9 @@ EOF
 
 # Parse the OpenVPN config file to extract the 'remote' server addresses
 mapfile -t vpn_servers < <(grep -oP '^remote\s+\K[^\s]+' "$conf")
+
+# Get system nameservers
+mapfile -t dns_servers < <(grep -oP '^nameserver\s+\K[^\s]+' /etc/resolv.conf)
 
 while getopts ":hc:Ddf:a:m:o:p:R:r:v:" opt; do
     case "$opt" in
