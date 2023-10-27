@@ -103,6 +103,11 @@ firewall() {
     ip6tables -t nat -A POSTROUTING -o tap+ -j MASQUERADE
     ip6tables -t nat -A POSTROUTING -o tun+ -j MASQUERADE
 
+    ip6tables -A INPUT -m limit --limit 5/min -j LOG --log-prefix "iptables_INPUT_dropped: " --log-level 4
+    ip6tables -A FORWARD -m limit --limit 5/min -j LOG --log-prefix "iptables_FORWARD_dropped: " --log-level 4
+    ip6tables -A OUTPUT -m limit --limit 5/min -j LOG --log-prefix "iptables_OUTPUT_dropped: " --log-level 4
+
+
     ip6tables -P INPUT DROP 2>/dev/null
     ip6tables -P FORWARD DROP 2>/dev/null
     ip6tables -P OUTPUT DROP 2>/dev/null
@@ -159,6 +164,10 @@ firewall() {
 
     iptables -t nat -A POSTROUTING -o tap+ -j MASQUERADE
     iptables -t nat -A POSTROUTING -o tun+ -j MASQUERADE
+
+    iptables -A INPUT -m limit --limit 5/min -j LOG --log-prefix "iptables_INPUT_dropped: " --log-level 4
+    iptables -A FORWARD -m limit --limit 5/min -j LOG --log-prefix "iptables_FORWARD_dropped: " --log-level 4
+    iptables -A OUTPUT -m limit --limit 5/min -j LOG --log-prefix "iptables_OUTPUT_dropped: " --log-level 4
 
     iptables -P INPUT DROP
     iptables -P FORWARD DROP
