@@ -72,7 +72,9 @@ firewall() {
     # Common rules for IPv6
     ip6tables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null
     ip6tables -A INPUT -p icmpv6 -j ACCEPT 2>/dev/null  # Updated for IPv6 ICMP
+
     ip6tables -A INPUT -i lo -j ACCEPT 2>/dev/null
+    ip6tables -A OUTPUT -o lo -j ACCEPT 2>/dev/null
 
     # Rules for each IPv6 address
     for docker6_network in "${docker6_networks[@]}"; do
@@ -96,7 +98,9 @@ firewall() {
 
     # Common rules for IPv4
     iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
     iptables -A INPUT -i lo -j ACCEPT
+    iptables -A OUTPUT -o lo -j ACCEPT
 
     # Rules for each IPv4 address
     for docker_network in "${docker_networks[@]}"; do
