@@ -71,7 +71,7 @@ firewall() {
 
     # Common rules for IPv6
     ip6tables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null
-    ip6tables -A INPUT -p icmpv6 -j ACCEPT 2>/dev/null  # Updated for IPv6 ICMP
+    ip6tables -A OUTPUT -p icmpv6 -j ACCEPT 2>/dev/null  # Updated for IPv6 ICMP
 
     ip6tables -A INPUT -i lo -j ACCEPT 2>/dev/null
     ip6tables -A OUTPUT -o lo -j ACCEPT 2>/dev/null
@@ -98,6 +98,8 @@ firewall() {
 
     # Common rules for IPv4
     iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    iptables -A OUTPUT -p icmp --icmp-type echo-request -j ACCEPT
+    iptables -A INPUT -p icmp --icmp-type echo-reply -j ACCEPT
 
     iptables -A INPUT -i lo -j ACCEPT
     iptables -A OUTPUT -o lo -j ACCEPT
