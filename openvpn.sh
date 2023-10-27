@@ -129,18 +129,20 @@ firewall() {
     fi
 
     # Ensure routing files exist and process their contents
-    if [[ ! -e $i ]]; then
-        touch $i
-    fi
+    for i in $route6 $route; do
+        if [[ ! -e $i ]]; then
+            touch "$i"
+        fi
 
-    if [[ -s $i ]]; then
-        while IFS= read -r net; do
-            # Define your return_route6 and return_route functions somewhere in your script.
-            # They should handle adding the necessary routes.
-            [[ $i == "$route6" ]] && return_route6 "$net"
-            [[ $i == "$route" ]] && return_route "$net"
-        done < "$i"
-    fi
+        if [[ -s $i ]]; then
+            while IFS= read -r net; do
+                # Define your return_route6 and return_route functions somewhere in your script.
+                # They should handle adding the necessary routes.
+                [[ $i == "$route6" ]] && return_route6 "$net"
+                [[ $i == "$route" ]] && return_route "$net"
+            done < "$i"
+        fi
+    done
 }
 
 
