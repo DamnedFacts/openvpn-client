@@ -2,7 +2,7 @@
 
 set -x
 
-set -euo pipefail  # Makes the script exit on any command failure and treats unset variables as an error
+#set -euo pipefail  # Makes the script exit on any command failure and treats unset variables as an error
 set -o nounset                              # Treat unset variables as an error
 
 # Global variables
@@ -70,14 +70,19 @@ firewall() {
     # Setup IPv6 iptables
     ip6tables -F 2>/dev/null
     ip6tables -X 2>/dev/null
-    ip6tables -P INPUT DROP 2>/dev/null
-    ip6tables -P FORWARD DROP 2>/dev/null
-    ip6tables -P OUTPUT DROP 2>/dev/null
 
     # Common rules for IPv6
     ip6tables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null
-    ip6tables -A INPUT -p icmpv6 -j ACCEPT 2>/dev/null  # Updated for IPv6 ICMP
+    ip6tables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null
+    ip6tables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT 2>/dev/null
+
+    ip6tables -A OUTPUT -p icmpv6 -j ACCEPT 2>/dev/null  # Updated for IPv6 ICMP
+
     ip6tables -A INPUT -i lo -j ACCEPT 2>/dev/null
+    ip6tables -A OUTPUT -o lo -j ACCEPT 2>/dev/null
+
+    ip6tables -A OUTPUT -o tap+ -j ACCEPT 2>/dev/null
+    ip6tables -A OUTPUT -o tun+ -j ACCEPT 2>/dev/null
 
     # Rules for each IPv6 address
     for docker6_network in "${docker6_networks[@]}"; do
@@ -89,6 +94,27 @@ firewall() {
         fi
     done
 
+    ip6tables -A OUTPUT -p tcp -m owner --gid-owner vpn -j ACCEPT 2>/dev/null &&
+    ip6tables -A OUTPUT -p udp -m owner --gid-owner vpn -j ACCEPT 2>/dev/null||{
+        for i in $port; do
+            ip6tables -A OUTPUT -p tcp -m tcp --dport $i -j ACCEPT 2>/dev/null
+            ip6tables -A OUTPUT -p udp -m udp --dport $i -j ACCEPT 2>/dev/null
+        done
+        ip6tables -A OUTPUT -p udp -m udp --dport 53 -j ACCEPT 2>/dev/null; }
+
+    ip6tables -t nat -A POSTROUTING -o tap+ -j MASQUERADE
+    ip6tables -t nat -A POSTROUTING -o tun+ -j MASQUERADE
+
+    ip6tables -A INPUT -m limit --limit 5/min -j LOG --log-prefix "iptables_INPUT_dropped: " --log-level 4
+    ip6tables -A FORWARD -m limit --limit 5/min -j LOG --log-prefix "iptables_FORWARD_dropped: " --log-level 4
+    ip6tables -A OUTPUT -m limit --limit 5/min -j LOG --log-prefix "iptables_OUTPUT_dropped: " --log-level 4
+
+
+    ip6tables -P INPUT DROP 2>/dev/null
+    ip6tables -P FORWARD DROP 2>/dev/null
+    ip6tables -P OUTPUT DROP 2>/dev/null
+
+
     # Additional common rules for FORWARD and OUTPUT for IPv6, if any, should be added here...
 
     # Setup IPv4 iptables
@@ -97,7 +123,17 @@ firewall() {
 
     # Common rules for IPv4
     iptables -A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    iptables -A FORWARD -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+    iptables -A OUTPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+
+    iptables -A OUTPUT -p icmp --icmp-type echo-request -j ACCEPT
+    iptables -A INPUT -p icmp --icmp-type echo-reply -j ACCEPT
+
     iptables -A INPUT -i lo -j ACCEPT
+    iptables -A OUTPUT -o lo -j ACCEPT
+
+    iptables -A OUTPUT -o tap+ -j ACCEPT
+    iptables -A OUTPUT -o tun+ -j ACCEPT
 
     # Rules for each IPv4 address
     for docker_network in "${docker_networks[@]}"; do
@@ -109,21 +145,38 @@ firewall() {
         fi
     done
 
-    # Allow traffic to VPN servers
-    for server in "${vpn_servers[@]}"; do
-        iptables -A OUTPUT -d "$server" -j ACCEPT
+    iptables -A OUTPUT -p tcp -m owner --gid-owner vpn -j ACCEPT 2>/dev/null &&
+    iptables -A OUTPUT -p udp -m owner --gid-owner vpn -j ACCEPT || {
+        for i in $port; do
+            iptables -A OUTPUT -p tcp -m tcp --dport $i -j ACCEPT
+            iptables -A OUTPUT -p udp -m udp --dport $i -j ACCEPT
+        done
+        iptables -A OUTPUT -p udp -m udp --dport 53 -j ACCEPT; }
+
+    for server in "${dns_servers[@]}"; do
+        iptables -A OUTPUT -d "$server" -m owner --gid-owner vpn -j ACCEPT \
+        2>/dev/null && {
+            iptables -A OUTPUT -p udp -m udp --dport 53 -j ACCEPT
+            ext_args+=" --route-up '/bin/sh -c \""
+            ext_args+=" iptables -A OUTPUT -d $server -j ACCEPT\"'"
+            ext_args+=" --route-pre-down '/bin/sh -c \""
+            ext_args+=" iptables -D OUTPUT -d $server -j ACCEPT\"'"
+        } || iptables -A OUTPUT -d "$server" -j ACCEPT
     done
 
-    # Allow traffic to DNS servers
-    for server in "${dns_servers[@]}"; do
-        iptables -A OUTPUT -d "$server" -j ACCEPT
-    done
+    iptables -t nat -A POSTROUTING -o tap+ -j MASQUERADE
+    iptables -t nat -A POSTROUTING -o tun+ -j MASQUERADE
+
+    iptables -A INPUT -m limit --limit 5/min -j LOG --log-prefix "iptables_INPUT_dropped: " --log-level 4
+    iptables -A FORWARD -m limit --limit 5/min -j LOG --log-prefix "iptables_FORWARD_dropped: " --log-level 4
+    iptables -A OUTPUT -m limit --limit 5/min -j LOG --log-prefix "iptables_OUTPUT_dropped: " --log-level 4
 
     iptables -P INPUT DROP
     iptables -P FORWARD DROP
     iptables -P OUTPUT DROP
-    # Additional common rules for OUTPUT and NAT tables for IPv4, if any, should be added here...
 
+
+    # Additional common rules for OUTPUT and NAT tables for IPv4, if any, should be added here...
 
     # Check if custom firewall rules file exists and source it
     if [[ -r $firewall_cust ]]; then
@@ -133,7 +186,7 @@ firewall() {
     # Ensure routing files exist and process their contents
     for i in $route6 $route; do
         if [[ ! -e $i ]]; then
-            touch $i
+            touch "$i"
         fi
 
         if [[ -s $i ]]; then
@@ -157,12 +210,12 @@ global_return_routes() {
     local iface=$(ip route | awk '/^default/ {print $5; exit}')
 
     # Extract default gateways and local IPs using the 'ip' command.
-    local gw6=$(ip -6 route show dev "$iface" | awk '/default/ {print $3}')
     local gw=$(ip -4 route show dev "$iface" | awk '/default/ {print $3}')
-    local ip6=$(ip -6 addr show dev "$iface" | awk -F '[ \t/]+' '/inet6.*global/ {print $3}')
     local ip=$(ip -4 addr show dev "$iface" | awk -F '[ \t/]+' '/inet .*global/ {print $3}')
 
     # Process IPv6 addresses and default gateways.
+    local ip6=$(ip -6 addr show dev "$iface" | awk -F '[ \t/]+' '/inet6.*global/ {print $3}')
+    local gw6=$(ip -6 route show dev "$iface" | awk '/default/ {print $3}')
     for addr in $ip6; do
         ip -6 rule show table 10 | grep -q "$addr\\>" || ip -6 rule add from $addr lookup 10
         ip6tables -S 2>/dev/null | grep -q "$addr\\>" || ip6tables -A INPUT -d $addr -j ACCEPT 2>/dev/null
@@ -421,16 +474,8 @@ EOF
 # Parse the OpenVPN config file to extract the 'remote' server addresses
 mapfile -t vpn_servers < <(grep -oP '^remote\s+\K[^\s]+' "$conf")
 
-# Parse the OpenVPN config file or the system's resolv.conf to find the DNS server
-# This is an example and might need to be adjusted based on your specific setup
-mapfile -t dns_servers < <(grep -oP 'dhcp-option\s+DNS\s+\K[^\s]+' "$conf" || grep -oP '^nameserver\s+\K[^\s]+' /etc/resolv.conf)
-
-# Check if we didn't find any DNS servers in the OpenVPN configuration
-if [ ${#dns_servers[@]} -eq 0 ]; then
-    # No DNS servers were found in the OpenVPN config, let's use the system's DNS settings
-    mapfile -t dns_servers < <(grep -oP '^nameserver\s+\K[^\s]+' /etc/resolv.conf)
-fi
-
+# Get system nameservers
+mapfile -t dns_servers < <(grep -oP '^nameserver\s+\K[^\s]+' /etc/resolv.conf)
 
 while getopts ":hc:Ddf:a:m:o:p:R:r:v:" opt; do
     case "$opt" in
