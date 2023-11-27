@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 
-set -euo pipefail  # Makes the script exit on any command failure and treats unset variables as an error
+set -x
+
+#set -euo pipefail  # Makes the script exit on any command failure and treats unset variables as an error
 set -o nounset                              # Treat unset variables as an error
 
 # Global variables

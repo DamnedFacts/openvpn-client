@@ -1,4 +1,4 @@
-FROM alpine:latest
+FROM alpine:edge
 MAINTAINER Richard Sarkis <rich@sark.is>
 
 # Install openvpn
